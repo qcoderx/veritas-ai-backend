@@ -8,6 +8,7 @@ python-dotenv
 passlib[bcrypt]
 python-jose[cryptography]
 boto3
+pydantic-settings
 google-api-python-client
 exifread
 Pillow

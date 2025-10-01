@@ -3,7 +3,7 @@
 import os
 from typing import Optional
 from dotenv import load_dotenv
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings # <-- THIS LINE IS CHANGED
 
 load_dotenv()
 
@@ -30,9 +30,13 @@ class Settings(BaseSettings):
     AMAZON_Q_APP_ID: str
     AMAZON_Q_USER_ID_PREFIX: str
 
-    # --- NEW: Google Reverse Image Search ---
+    # Google Reverse Image Search
     GOOGLE_API_KEY: Optional[str] = None
     GOOGLE_CUSTOM_SEARCH_ENGINE_ID: Optional[str] = None
+
+    # AWS Rekognition Video
+    REKOGNITION_SNS_TOPIC_ARN: str
+    REKOGNITION_ROLE_ARN: str
 
     class Config:
         case_sensitive = True
