@@ -1,13 +1,14 @@
 # requirements.txt
 
 # --- Core Application ---
-fastapi>=0.104.0
+fastapi
 uvicorn[standard]
 python-multipart
 
-# --- Pydantic v2 and Settings ---
-pydantic>=2.0
+# --- Pydantic v2 and All Sub-dependencies ---
+pydantic
 pydantic-settings
+email-validator  # <-- THE FINAL, MISSING PIECE
 
 # --- Database ---
 motor
@@ -15,6 +16,7 @@ motor
 # --- Security & Auth ---
 python-dotenv
 passlib[bcrypt]
+bcrypt==3.2.2  # Pinning bcrypt to prevent the previous error
 python-jose[cryptography]
 
 # --- AWS & Google Services ---
