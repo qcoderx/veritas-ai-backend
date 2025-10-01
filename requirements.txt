@@ -1,15 +1,20 @@
 # requirements.txt
 
-fastapi
-uvicorn[standard]
-pydantic[email]
-motor
-python-dotenv
-passlib[bcrypt]
-python-jose[cryptography]
-boto3
-pydantic-settings
-google-api-python-client
-python-multipart
-exifread
-Pillow
+fastapi==0.104.1
+uvicorn[standard]==0.23.2
+pydantic[email]==1.10.13
+pydantic-settings==2.0.3
+python-multipart==0.0.6
+
+# --- Pinned versions to fix hashing error ---
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
+# -----------------------------------------
+
+motor==3.3.1
+python-dotenv==1.0.0
+python-jose[cryptography]==3.3.0
+boto3==1.28.78
+google-api-python-client==2.103.0
+Pillow==10.1.0
+exifread==3.0.0
