@@ -10,5 +10,6 @@ python-jose[cryptography]
 boto3
 pydantic-settings
 google-api-python-client
+python-multipart
 exifread
 Pillow
