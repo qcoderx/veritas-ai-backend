@@ -1,0 +1,13 @@
+# requirements.txt
+
+fastapi
+uvicorn[standard]
+pydantic[email]
+motor
+python-dotenv
+passlib[bcrypt]
+python-jose[cryptography]
+boto3
+google-api-python-client
+exifread
+Pillow
