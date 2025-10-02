@@ -24,3 +24,5 @@ boto3
 google-api-python-client
 Pillow
 exifread
+redis
+rq 
