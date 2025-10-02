@@ -12,6 +12,10 @@ import uuid
 from datetime import datetime
 from typing import List
 
+# --- THIS IS THE MISSING IMPORT THAT CAUSED THE ERROR ---
+from app.core.config import settings
+# ---------------------------------------------------------
+
 router = APIRouter()
 
 @router.post("/", response_model=ClaimCreateResponse, status_code=status.HTTP_201_CREATED)
@@ -26,8 +30,6 @@ async def create_claim(
     new_claim_id = str(uuid.uuid4())
     upload_urls = []
 
-    # The frontend needs to provide the original filenames to construct the S3 keys
-    # This is a conceptual change. For simplicity, we keep the unique key generation.
     for i in range(claim_in.file_count):
         object_name = f"claims/{new_claim_id}/file_{uuid.uuid4().hex}"
         presigned_data = aws_service.generate_presigned_post_url(object_name)
@@ -36,10 +38,6 @@ async def create_claim(
                 status_code=500, detail="Could not generate S3 upload URL."
             )
         upload_urls.append(presigned_data)
-    
-    # After generating URLs, we need to save records for the files to be uploaded
-    # The frontend is now responsible for telling us which key belongs to which file
-    # This part is simplified here for clarity. The frontend would need to manage this mapping.
 
     claim_data = {
         "id": new_claim_id, "adjuster_id": current_user.id, "status": "upload_in_progress",
@@ -69,13 +67,9 @@ async def trigger_claim_analysis(
     await claims_collection.update_one({"id": claim_id}, {"$set": {"status": "analyzing"}})
 
     # --- START OF LAMBDA LOGIC REPLICATION ---
-
-    # 1. Find all S3 keys associated with this claim. In a real app, these would be stored
-    # upon upload. Here, we'll list them from S3.
     s3_prefix = f"claims/{claim_id}/"
     s3_objects = aws_service.s3_client.list_objects_v2(Bucket=settings.S3_UPLOADS_BUCKET_NAME, Prefix=s3_prefix)
     
-    # Clear any previous analysis to re-process everything
     await documents_collection.delete_many({"claim_id": claim_id})
 
     for obj in s3_objects.get('Contents', []):
@@ -91,7 +85,6 @@ async def trigger_claim_analysis(
         }
         doc_id = (await documents_collection.insert_one(doc_record)).inserted_id
         
-        # 2. Process each file just like the Lambda would have
         if is_image:
             forensics = aws_service.analyze_image_forensics(s3_key)
             reverse_search = aws_service.reverse_image_search(s3_key)
@@ -103,8 +96,6 @@ async def trigger_claim_analysis(
                 "analysis_status": "completed"
             }})
         elif is_video:
-             # NOTE: Asynchronous video processing is complex. For simplicity in a web server,
-             # we will skip it. A real implementation would use a Background Worker on Render.
              await documents_collection.update_one({"_id": doc_id}, {"$set": {"analysis_status": "skipped_video"}})
         else: # Documents
             text = aws_service.extract_text_with_textract(s3_key)
@@ -112,7 +103,6 @@ async def trigger_claim_analysis(
 
     # --- END OF LAMBDA LOGIC REPLICATION ---
 
-    # 3. Gather results and synthesize (same as before)
     all_docs_cursor = documents_collection.find({"claim_id": claim_id})
     all_docs_list = await all_docs_cursor.to_list(length=100)
     
@@ -128,9 +118,8 @@ async def trigger_claim_analysis(
     
     adjuster_notes = claim.get('additional_info')
     
-    final_report = await analyze_claim_bundle(texts_for_analysis, images_for_analysis, video_analyses, adjuster_notes)
+    final_report = await analyze_claim_bundle(texts_for_analysis, images_for_analysis, video_analyses, adjuster_.notes)
 
-    # 4. Update the claim with the final report
     update_data = {
         "summary": final_report.get("summary"), "fraud_risk_score": final_report.get("fraud_risk_score"),
         "key_risk_factors": final_report.get("key_risk_factors"), "status": "ready_for_review",
