@@ -11,10 +11,7 @@ from motor.motor_asyncio import AsyncIOMotorCollection
 import uuid
 from datetime import datetime
 from typing import List
-
-# --- THIS IS THE MISSING IMPORT THAT CAUSED THE ERROR ---
 from app.core.config import settings
-# ---------------------------------------------------------
 
 router = APIRouter()
 
@@ -66,7 +63,6 @@ async def trigger_claim_analysis(
 
     await claims_collection.update_one({"id": claim_id}, {"$set": {"status": "analyzing"}})
 
-    # --- START OF LAMBDA LOGIC REPLICATION ---
     s3_prefix = f"claims/{claim_id}/"
     s3_objects = aws_service.s3_client.list_objects_v2(Bucket=settings.S3_UPLOADS_BUCKET_NAME, Prefix=s3_prefix)
     
@@ -101,14 +97,12 @@ async def trigger_claim_analysis(
             text = aws_service.extract_text_with_textract(s3_key)
             await documents_collection.update_one({"_id": doc_id}, {"$set": {"extracted_text": text, "analysis_status": "completed"}})
 
-    # --- END OF LAMBDA LOGIC REPLICATION ---
-
     all_docs_cursor = documents_collection.find({"claim_id": claim_id})
     all_docs_list = await all_docs_cursor.to_list(length=100)
     
     texts_for_analysis = [doc['extracted_text'] for doc in all_docs_list if doc.get('extracted_text')]
     images_for_analysis = []
-    video_analyses = [] # Placeholder for Render version
+    video_analyses = []
     for doc in all_docs_list:
         if doc.get('image_analysis_results'):
             images_for_analysis.append({
@@ -118,7 +112,8 @@ async def trigger_claim_analysis(
     
     adjuster_notes = claim.get('additional_info')
     
-    final_report = await analyze_claim_bundle(texts_for_analysis, images_for_analysis, video_analyses, adjuster_.notes)
+    # --- THIS IS THE CORRECTED LINE ---
+    final_report = await analyze_claim_bundle(texts_for_analysis, images_for_analysis, video_analyses, adjuster_notes)
 
     update_data = {
         "summary": final_report.get("summary"), "fraud_risk_score": final_report.get("fraud_risk_score"),
@@ -136,9 +131,6 @@ async def get_claim(
     claims_collection: AsyncIOMotorCollection = Depends(lambda: get_db_collection("claims")),
     current_user: User = Depends(get_current_active_user)
 ):
-    """
-    Retrieves a claim's details and analysis results.
-    """
     claim = await claims_collection.find_one({"id": claim_id, "adjuster_id": current_user.id})
     if not claim:
         raise HTTPException(
