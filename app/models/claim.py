@@ -16,7 +16,7 @@ class ClaimBase(BaseModel):
 
 class ClaimCreate(BaseModel):
     file_count: int = Field(..., gt=0, description="Number of files to be uploaded for this claim")
-    # --- THIS IS THE MISSING LINE THAT CAUSED THE ERROR ---
+    # --- THIS IS THE MISSING LINE THAT IS CAUSING THE ERROR ---
     additional_info: Optional[str] = Field(None, description="Adjuster's notes or extra context.")
 
 class ClaimCreateResponse(BaseModel):
