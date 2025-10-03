@@ -28,18 +28,18 @@ async def create_claim(
     upload_urls = []
 
     for i in range(claim_in.file_count):
+        # We must store the generated keys to process them later
         object_name = f"claims/{new_claim_id}/file_{uuid.uuid4().hex}"
         presigned_data = aws_service.generate_presigned_post_url(object_name)
         if not presigned_data:
-            raise HTTPException(
-                status_code=500, detail="Could not generate S3 upload URL."
-            )
+            raise HTTPException(status_code=500, detail="Could not generate S3 upload URL.")
         upload_urls.append(presigned_data)
 
     claim_data = {
         "id": new_claim_id, "adjuster_id": current_user.id, "status": "upload_in_progress",
         "file_count": claim_in.file_count, "additional_info": claim_in.additional_info,
-        "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()
+        "created_at": datetime.utcnow(), "updated_at": datetime.utcnow(),
+        "s3_keys": [url['fields']['key'] for url in upload_urls] # Store the keys
     }
     await claims_collection.insert_one(claim_data)
     
@@ -55,26 +55,28 @@ async def trigger_claim_analysis(
 ):
     """
     Triggers the entire forensic analysis pipeline for a claim.
-    This endpoint now replicates the work of the AWS Lambda functions.
     """
     claim = await claims_collection.find_one({"id": claim_id, "adjuster_id": current_user.id})
     if not claim:
         raise HTTPException(status_code=404, detail="Claim not found")
 
     await claims_collection.update_one({"id": claim_id}, {"$set": {"status": "analyzing"}})
-
-    s3_prefix = f"claims/{claim_id}/"
-    s3_objects = aws_service.s3_client.list_objects_v2(Bucket=settings.S3_UPLOADS_BUCKET_NAME, Prefix=s3_prefix)
     
     await documents_collection.delete_many({"claim_id": claim_id})
 
-    for obj in s3_objects.get('Contents', []):
-        s3_key = obj['Key']
+    # --- CORRECTED LOGIC: Use the stored S3 keys ---
+    s3_keys_to_process = claim.get("s3_keys", [])
+    if not s3_keys_to_process:
+        # Fallback to listing from S3 if keys weren't stored (older claims)
+        s3_prefix = f"claims/{claim_id}/"
+        s3_objects = aws_service.s3_client.list_objects_v2(Bucket=settings.S3_UPLOADS_BUCKET_NAME, Prefix=s3_prefix)
+        s3_keys_to_process = [obj['Key'] for obj in s3_objects.get('Contents', [])]
+
+    for s3_key in s3_keys_to_process:
         original_filename = s3_key.split('/')[-1]
         file_extension = s3_key.split('.')[-1].lower()
         is_image = file_extension in ['jpg', 'jpeg', 'png']
-        is_video = file_extension in ['mp4', 'mov', 'avi']
-
+        
         doc_record = {
             "claim_id": claim_id, "s3_key": s3_key, "original_filename": original_filename,
             "analysis_status": "processing", "upload_timestamp": datetime.utcnow()
@@ -91,18 +93,16 @@ async def trigger_claim_analysis(
                 "reverse_image_search_results": reverse_search, "image_metadata": metadata,
                 "analysis_status": "completed"
             }})
-        elif is_video:
-             await documents_collection.update_one({"_id": doc_id}, {"$set": {"analysis_status": "skipped_video"}})
-        else: # Documents
+        else: # Documents (PDFs, etc.)
             text = aws_service.extract_text_with_textract(s3_key)
             await documents_collection.update_one({"_id": doc_id}, {"$set": {"extracted_text": text, "analysis_status": "completed"}})
 
+    # --- GATHER RESULTS AND SYNTHESIZE ---
     all_docs_cursor = documents_collection.find({"claim_id": claim_id})
     all_docs_list = await all_docs_cursor.to_list(length=100)
     
     texts_for_analysis = [doc['extracted_text'] for doc in all_docs_list if doc.get('extracted_text')]
     images_for_analysis = []
-    video_analyses = []
     for doc in all_docs_list:
         if doc.get('image_analysis_results'):
             images_for_analysis.append({
@@ -112,8 +112,7 @@ async def trigger_claim_analysis(
     
     adjuster_notes = claim.get('additional_info')
     
-    # --- THIS IS THE CORRECTED LINE ---
-    final_report = await analyze_claim_bundle(texts_for_analysis, images_for_analysis, video_analyses, adjuster_notes)
+    final_report = await analyze_claim_bundle(texts_for_analysis, images_for_analysis, [], adjuster_notes)
 
     update_data = {
         "summary": final_report.get("summary"), "fraud_risk_score": final_report.get("fraud_risk_score"),
@@ -133,8 +132,5 @@ async def get_claim(
 ):
     claim = await claims_collection.find_one({"id": claim_id, "adjuster_id": current_user.id})
     if not claim:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Claim not found."
-        )
+        raise HTTPException(status_code=404, detail="Claim not found.")
     return claim
