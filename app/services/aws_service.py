@@ -52,7 +52,6 @@ class AWSService:
             return None
 
     def analyze_image_forensics(self, s3_key: str) -> Dict[str, Any]:
-        """Performs a multi-layered forensic analysis on an image using Rekognition."""
         results = {"forensic_alerts": [], "detected_objects": [], "detected_text": []}
         s3_object = {'Bucket': settings.S3_UPLOADS_BUCKET_NAME, 'Name': s3_key}
         try:
@@ -77,7 +76,6 @@ class AWSService:
         return results
 
     def reverse_image_search(self, s3_key: str) -> Dict[str, Any]:
-        """Performs a reverse image search to find instances of the image online."""
         results = {"match_found": False, "urls": [], "search_status": "not_configured"}
         if not self.google_search_service:
             results["search_status"] = "API keys for reverse image search are not configured or failed to initialize."
@@ -99,7 +97,6 @@ class AWSService:
         return results
 
     def extract_text_with_textract(self, s3_key: str) -> str:
-        """Extracts text from a document (PDF, JPG, PNG) using Amazon Textract."""
         try:
             response = self.textract_client.start_document_text_detection(DocumentLocation={'S3Object': {'Bucket': settings.S3_UPLOADS_BUCKET_NAME, 'Name': s3_key}})
             job_id = response['JobId']
@@ -120,7 +117,6 @@ class AWSService:
             raise
 
     def invoke_bedrock_model(self, prompt: str) -> Dict[str, Any]:
-        """Invokes the Amazon Bedrock model using the new Messages API for Claude 3."""
         try:
             body = json.dumps({
                 "anthropic_version": "bedrock-2023-05-31",
@@ -136,7 +132,6 @@ class AWSService:
             raise
 
     def query_amazon_q(self, claim_id: str, user_id: str, query: str) -> str:
-        """Sends a query to Amazon Q for conversational investigation."""
         try:
             response = self.q_client.chat_sync(applicationId=settings.AMAZON_Q_APP_ID, userId=f"{settings.AMAZON_Q_USER_ID_PREFIX}-{user_id}", userMessage=query)
             return response.get("systemMessage", "I could not find an answer.")
@@ -145,7 +140,6 @@ class AWSService:
             raise
 
     def extract_image_metadata(self, s3_key: str) -> dict:
-        """Extracts detailed EXIF metadata from an image stored in S3."""
         metadata = {"date_time_original": None, "camera_model": None, "gps_info": None, "warnings": []}
         try:
             s3_object = self.s3_client.get_object(Bucket=settings.S3_UPLOADS_BUCKET_NAME, Key=s3_key)
@@ -168,7 +162,6 @@ class AWSService:
         return metadata
 
     def start_video_analysis(self, s3_key: str) -> str:
-        """Starts an asynchronous video analysis job with Amazon Rekognition."""
         s3_object = {'S3Object': {'Bucket': settings.S3_UPLOADS_BUCKET_NAME, 'Name': s3_key}}
         sns_notification_channel = {'SNSTopicArn': settings.REKOGNITION_SNS_TOPIC_ARN, 'RoleArn': settings.REKOGNITION_ROLE_ARN}
         try:
