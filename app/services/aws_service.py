@@ -3,6 +3,7 @@
 import boto3
 import json
 import time
+from botocore.client import Config # <-- Import the Config object
 from botocore.exceptions import ClientError
 from app.core.config import settings
 from googleapiclient.discovery import build
@@ -14,7 +15,15 @@ import exifread
 class AWSService:
     def __init__(self):
         """Initializes all required AWS and Google service clients."""
-        self.s3_client = boto3.client("s3", region_name=settings.AWS_REGION)
+        # --- THIS IS THE CORRECTED S3 CLIENT INITIALIZATION ---
+        # Explicitly set the region and signature version to create correct URLs
+        self.s3_client = boto3.client(
+            "s3",
+            region_name=settings.AWS_REGION,
+            config=Config(signature_version='s3v4')
+        )
+        # ---------------------------------------------------------
+
         self.bedrock_runtime = boto3.client("bedrock-runtime", region_name=settings.AWS_REGION)
         self.q_client = boto3.client("qbusiness", region_name=settings.AWS_REGION)
         self.rekognition_client = boto3.client("rekognition", region_name=settings.AWS_REGION)
@@ -106,41 +115,23 @@ class AWSService:
                 return "\n".join(text_blocks)
             else:
                 print(f"ERROR: Textract job failed for {s3_key}. Status: {result.get('StatusMessage')}")
-                return f"Text extraction failed: {result.get('StatusMessage')}"
+                raise Exception(f"Textract job failed: {result.get('StatusMessage')}")
         except ClientError as e:
             print(f"FATAL: Textract service error for {s3_key}. Reason: {e}")
-            return "Text extraction failed due to a service error."
+            raise
 
     def invoke_bedrock_model(self, prompt: str) -> Dict[str, Any]:
-        """
-        Invokes the Amazon Bedrock model using the new Messages API for Claude 3.
-        """
-        # --- THIS IS THE UPGRADED CODE BLOCK ---
+        """Invokes the Amazon Bedrock model using the new Messages API for Claude 3."""
         try:
-            # Claude 3 requires the new "Messages" API format
             body = json.dumps({
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": 4096,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [{"type": "text", "text": prompt}]
-                    }
-                ]
+                "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
             })
-
-            response = self.bedrock_runtime.invoke_model(
-                body=body,
-                modelId=settings.BEDROCK_MODEL_ID,
-                accept="application/json",
-                contentType="application/json"
-            )
+            response = self.bedrock_runtime.invoke_model(body=body, modelId=settings.BEDROCK_MODEL_ID, accept="application/json", contentType="application/json")
             response_body = json.loads(response.get("body").read())
-            
-            # The response format is also different for the Messages API
             completion = response_body.get('content', [{}])[0].get('text', '')
             return {"text": completion}
-
         except ClientError as e:
             print(f"FATAL: Error invoking Bedrock model: {e}")
             raise
@@ -151,20 +142,18 @@ class AWSService:
             response = self.q_client.chat_sync(applicationId=settings.AMAZON_Q_APP_ID, userId=f"{settings.AMAZON_Q_USER_ID_PREFIX}-{user_id}", userMessage=query)
             return response.get("systemMessage", "I could not find an answer.")
         except ClientError as e:
-            print(f"ERROR: Error querying Amazon Q: {e}")
-            return "There was an error processing your question."
+            print(f"ERROR: Error querying Amazon Q for claim {claim_id}: {e}")
+            raise
 
     def extract_image_metadata(self, s3_key: str) -> dict:
-        """
-        Extracts detailed EXIF metadata from an image stored in S3.
-        """
+        """Extracts detailed EXIF metadata from an image stored in S3."""
         metadata = {"date_time_original": None, "camera_model": None, "gps_info": None, "warnings": []}
         try:
             s3_object = self.s3_client.get_object(Bucket=settings.S3_UPLOADS_BUCKET_NAME, Key=s3_key)
             image_bytes = s3_object['Body'].read()
             tags = exifread.process_file(io.BytesIO(image_bytes), details=False)
             if not tags:
-                metadata["warnings"].append("No EXIF metadata found in image. This can be a sign of tampering or scrubbing.")
+                metadata["warnings"].append("No EXIF metadata found. This could indicate a scrubbed or downloaded image.")
                 return metadata
             if 'EXIF DateTimeOriginal' in tags:
                 metadata["date_time_original"] = str(tags['EXIF DateTimeOriginal'])
@@ -176,18 +165,16 @@ class AWSService:
                 metadata["gps_info"] = f"Latitude: {lat}, Longitude: {lon}"
         except Exception as e:
             print(f"ERROR: Could not extract EXIF data for {s3_key}. Reason: {e}")
-            metadata["warnings"].append(f"Technical error during metadata extraction: {e}")
+            metadata["warnings"].append(f"Technical error during metadata extraction.")
         return metadata
 
     def start_video_analysis(self, s3_key: str) -> str:
-        """
-        Starts label and text detection jobs for a video in S3.
-        """
+        """Starts an asynchronous video analysis job with Amazon Rekognition."""
         s3_object = {'S3Object': {'Bucket': settings.S3_UPLOADS_BUCKET_NAME, 'Name': s3_key}}
         sns_notification_channel = {'SNSTopicArn': settings.REKOGNITION_SNS_TOPIC_ARN, 'RoleArn': settings.REKOGNITION_ROLE_ARN}
         try:
-            label_response = self.rekognition_client.start_label_detection(Video=s3_object, NotificationChannel=sns_notification_channel)
-            job_id = label_response['JobId']
+            response = self.rekognition_client.start_label_detection(Video=s3_object, NotificationChannel=sns_notification_channel)
+            job_id = response['JobId']
             print(f"Started video label detection job {job_id} for {s3_key}")
             return job_id
         except ClientError as e:
