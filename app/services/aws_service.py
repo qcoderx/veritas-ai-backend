@@ -3,7 +3,7 @@
 import boto3
 import json
 import time
-from botocore.client import Config # <-- Import the Config object
+from botocore.client import Config
 from botocore.exceptions import ClientError
 from app.core.config import settings
 from googleapiclient.discovery import build
@@ -15,19 +15,18 @@ import exifread
 class AWSService:
     def __init__(self):
         """Initializes all required AWS and Google service clients."""
-        # --- THIS IS THE CORRECTED S3 CLIENT INITIALIZATION ---
-        # Explicitly set the region and signature version to create correct URLs
-        self.s3_client = boto3.client(
-            "s3",
-            region_name=settings.AWS_REGION,
-            config=Config(signature_version='s3v4')
-        )
-        # ---------------------------------------------------------
-
-        self.bedrock_runtime = boto3.client("bedrock-runtime", region_name=settings.AWS_REGION)
-        self.q_client = boto3.client("qbusiness", region_name=settings.AWS_REGION)
-        self.rekognition_client = boto3.client("rekognition", region_name=settings.AWS_REGION)
-        self.textract_client = boto3.client("textract", region_name=settings.AWS_REGION)
+        # --- THIS IS THE FINAL, DEFINITIVE FIX ---
+        # Create a session with the region explicitly defined.
+        # This forces all clients created from this session to use the correct region.
+        session = boto3.Session(region_name=settings.AWS_REGION)
+        
+        # Create all clients from the session to ensure regional consistency.
+        self.s3_client = session.client("s3", config=Config(signature_version='s3v4'))
+        self.bedrock_runtime = session.client("bedrock-runtime")
+        self.q_client = session.client("qbusiness")
+        self.rekognition_client = session.client("rekognition")
+        self.textract_client = session.client("textract")
+        # ----------------------------------------------
 
         if settings.GOOGLE_API_KEY and settings.GOOGLE_CUSTOM_SEARCH_ENGINE_ID:
             try:
