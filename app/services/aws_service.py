@@ -17,12 +17,10 @@ class AWSService:
     def __init__(self):
         """Initializes all required AWS and Google service clients."""
         session = boto3.Session(region_name=settings.AWS_REGION)
-        
         self.s3_client = session.client("s3", config=Config(signature_version='s3v4'))
         self.bedrock_runtime = session.client("bedrock-runtime")
         self.q_client = session.client("qbusiness")
         self.rekognition_client = session.client("rekognition")
-        # Textract client is no longer needed.
 
         if settings.GOOGLE_API_KEY and settings.GOOGLE_CUSTOM_SEARCH_ENGINE_ID:
             try:
@@ -36,11 +34,7 @@ class AWSService:
 
     def generate_presigned_post_url(self, object_name: str) -> Optional[Dict[str, Any]]:
         try:
-            return self.s3_client.generate_presigned_post(
-                Bucket=settings.S3_UPLOADS_BUCKET_NAME,
-                Key=object_name,
-                ExpiresIn=3600
-            )
+            return self.s3_client.generate_presigned_post(Bucket=settings.S3_UPLOADS_BUCKET_NAME, Key=object_name, ExpiresIn=3600)
         except ClientError as e:
             print(f"FATAL: Error generating presigned URL: {e}")
             return None
@@ -84,8 +78,7 @@ class AWSService:
             elif s3_key.lower().endswith('.pdf'): media_type = "application/pdf"
             prompt = "Extract all text verbatim from the document. Do not summarize or add commentary."
             body = json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 4096,
+                "anthropic_version": "bedrock-2023-05-31", "max_tokens": 4096,
                 "messages": [{"role": "user", "content": [
                     {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64_encoded_data}},
                     {"type": "text", "text": prompt}
@@ -101,21 +94,26 @@ class AWSService:
     def invoke_bedrock_model(self, prompt: str) -> Dict[str, Any]:
         try:
             body = json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 4096,
+                "anthropic_version": "bedrock-2023-05-31", "max_tokens": 4096,
                 "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
             })
             response = self.bedrock_runtime.invoke_model(body=body, modelId=settings.BEDROCK_MODEL_ID, accept="application/json", contentType="application/json")
             response_body = json.loads(response.get("body").read())
-            completion = response_body.get('content', [{}])[0].get('text', '')
-            return {"text": completion}
+            return {"text": response_body.get('content', [{}])[0].get('text', '')}
         except ClientError as e:
             print(f"FATAL: Error invoking Bedrock model: {e}")
             raise
 
     def query_amazon_q(self, claim_id: str, user_id: str, query: str) -> str:
+        """Sends a query to Amazon Q for conversational investigation."""
         try:
-            response = self.q_client.chat_sync(applicationId=settings.AMAZON_Q_APP_ID, userId=f"{settings.AMAZON_Q_USER_ID_PREFIX}-{user_id}", userMessage=query)
+            # --- THIS IS THE CORRECTED CODE BLOCK ---
+            # For "Anonymous" access applications, the userId parameter must not be sent.
+            response = self.q_client.chat_sync(
+                applicationId=settings.AMAZON_Q_APP_ID,
+                userMessage=query
+            )
+            # ----------------------------------------
             return response.get("systemMessage", "I could not find an answer.")
         except ClientError as e:
             print(f"ERROR: Error querying Amazon Q for claim {claim_id}: {e}")
