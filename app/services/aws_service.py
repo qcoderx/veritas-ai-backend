@@ -2,6 +2,7 @@
 
 import boto3
 import json
+import base64
 import time
 from botocore.client import Config
 from botocore.exceptions import ClientError
@@ -15,18 +16,16 @@ import exifread
 class AWSService:
     def __init__(self):
         """Initializes all required AWS and Google service clients."""
-        # --- THIS IS THE FINAL, DEFINITIVE FIX ---
-        # Create a session with the region explicitly defined.
+        # --- Create a session with the region explicitly defined ---
         # This forces all clients created from this session to use the correct region.
         session = boto3.Session(region_name=settings.AWS_REGION)
         
-        # Create all clients from the session to ensure regional consistency.
+        # --- Create all clients from the session to ensure regional consistency ---
         self.s3_client = session.client("s3", config=Config(signature_version='s3v4'))
         self.bedrock_runtime = session.client("bedrock-runtime")
         self.q_client = session.client("qbusiness")
         self.rekognition_client = session.client("rekognition")
-        self.textract_client = session.client("textract")
-        # ----------------------------------------------
+        # self.textract_client is no longer needed
 
         if settings.GOOGLE_API_KEY and settings.GOOGLE_CUSTOM_SEARCH_ENGINE_ID:
             try:
@@ -52,6 +51,7 @@ class AWSService:
             return None
 
     def analyze_image_forensics(self, s3_key: str) -> Dict[str, Any]:
+        """Performs a multi-layered forensic analysis on an image using Rekognition."""
         results = {"forensic_alerts": [], "detected_objects": [], "detected_text": []}
         s3_object = {'Bucket': settings.S3_UPLOADS_BUCKET_NAME, 'Name': s3_key}
         try:
@@ -76,6 +76,7 @@ class AWSService:
         return results
 
     def reverse_image_search(self, s3_key: str) -> Dict[str, Any]:
+        """Performs a reverse image search to find instances of the image online."""
         results = {"match_found": False, "urls": [], "search_status": "not_configured"}
         if not self.google_search_service:
             results["search_status"] = "API keys for reverse image search are not configured or failed to initialize."
@@ -96,27 +97,54 @@ class AWSService:
             results["search_status"] = "An unexpected local error occurred."
         return results
 
-    def extract_text_with_textract(self, s3_key: str) -> str:
+    def extract_text_from_file_with_bedrock(self, s3_key: str) -> str:
+        """
+        Extracts text from a file (PNG, JPG, PDF) using Bedrock's Claude 3 Sonnet.
+        """
+        print(f"Attempting to extract text from {s3_key} using Bedrock...")
         try:
-            response = self.textract_client.start_document_text_detection(DocumentLocation={'S3Object': {'Bucket': settings.S3_UPLOADS_BUCKET_NAME, 'Name': s3_key}})
-            job_id = response['JobId']
-            while True:
-                result = self.textract_client.get_document_text_detection(JobId=job_id)
-                status = result['JobStatus']
-                if status in ['SUCCEEDED', 'FAILED']:
-                    break
-                time.sleep(2)
-            if status == 'SUCCEEDED':
-                text_blocks = [item['Text'] for item in result.get('Blocks', []) if item.get('BlockType') == 'LINE']
-                return "\n".join(text_blocks)
-            else:
-                print(f"ERROR: Textract job failed for {s3_key}. Status: {result.get('StatusMessage')}")
-                raise Exception(f"Textract job failed: {result.get('StatusMessage')}")
+            s3_object = self.s3_client.get_object(Bucket=settings.S3_UPLOADS_BUCKET_NAME, Key=s3_key)
+            file_bytes = s3_object['Body'].read()
+            base64_encoded_data = base64.b64encode(file_bytes).decode('utf-8')
+
+            media_type = "image/jpeg"
+            if s3_key.lower().endswith('.png'):
+                media_type = "image/png"
+            elif s3_key.lower().endswith('.pdf'):
+                media_type = "application/pdf"
+
+            prompt = "You are an Optical Character Recognition (OCR) engine. Extract all text from the following document verbatim. Do not summarize, add any commentary, or add markdown formatting. Output only the text you see."
+            
+            body = json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 4096,
+                "messages": [
+                    {"role": "user", "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64_encoded_data}},
+                        {"type": "text", "text": prompt}
+                    ]}
+                ],
+            })
+
+            response = self.bedrock_runtime.invoke_model(
+                body=body, modelId=settings.BEDROCK_MODEL_ID,
+                accept="application/json", contentType="application/json"
+            )
+            response_body = json.loads(response.get("body").read())
+            
+            extracted_text = response_body.get('content', [{}])[0].get('text', '')
+            print(f"Successfully extracted text from {s3_key} using Bedrock.")
+            return extracted_text
+
         except ClientError as e:
-            print(f"FATAL: Textract service error for {s3_key}. Reason: {e}")
+            print(f"FATAL: Bedrock text extraction failed for {s3_key}. Reason: {e}")
+            raise
+        except Exception as e:
+            print(f"FATAL: An unexpected error occurred during Bedrock text extraction: {e}")
             raise
 
     def invoke_bedrock_model(self, prompt: str) -> Dict[str, Any]:
+        """Invokes the Amazon Bedrock model using the new Messages API for Claude 3."""
         try:
             body = json.dumps({
                 "anthropic_version": "bedrock-2023-05-31",
@@ -132,6 +160,7 @@ class AWSService:
             raise
 
     def query_amazon_q(self, claim_id: str, user_id: str, query: str) -> str:
+        """Sends a query to Amazon Q for conversational investigation."""
         try:
             response = self.q_client.chat_sync(applicationId=settings.AMAZON_Q_APP_ID, userId=f"{settings.AMAZON_Q_USER_ID_PREFIX}-{user_id}", userMessage=query)
             return response.get("systemMessage", "I could not find an answer.")
@@ -140,6 +169,7 @@ class AWSService:
             raise
 
     def extract_image_metadata(self, s3_key: str) -> dict:
+        """Extracts detailed EXIF metadata from an image stored in S3."""
         metadata = {"date_time_original": None, "camera_model": None, "gps_info": None, "warnings": []}
         try:
             s3_object = self.s3_client.get_object(Bucket=settings.S3_UPLOADS_BUCKET_NAME, Key=s3_key)
@@ -162,6 +192,7 @@ class AWSService:
         return metadata
 
     def start_video_analysis(self, s3_key: str) -> str:
+        """Starts an asynchronous video analysis job with Amazon Rekognition."""
         s3_object = {'S3Object': {'Bucket': settings.S3_UPLOADS_BUCKET_NAME, 'Name': s3_key}}
         sns_notification_channel = {'SNSTopicArn': settings.REKOGNITION_SNS_TOPIC_ARN, 'RoleArn': settings.REKOGNITION_ROLE_ARN}
         try:
