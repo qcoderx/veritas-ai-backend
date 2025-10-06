@@ -69,56 +69,39 @@ async def trigger_claim_analysis(
 
     s3_keys_to_process = claim.get("s3_keys", [])
 
+    texts_for_analysis = []
+    images_for_analysis = []
+    video_analyses = [] # Video analysis is not implemented in this server-based flow
+
     for s3_key in s3_keys_to_process:
         original_filename = s3_key.split('/')[-1]
         file_extension = s3_key.split('.')[-1].lower()
         is_image = file_extension in ['jpg', 'jpeg', 'png']
         is_document = file_extension in ['pdf']
-
-        doc_record = {
-            "claim_id": claim_id, "s3_key": s3_key, "original_filename": original_filename,
-            "analysis_status": "processing", "upload_timestamp": datetime.utcnow()
-        }
-        doc_id = (await documents_collection.insert_one(doc_record)).inserted_id
         
         try:
+            # --- USE BEDROCK FOR ALL TEXT EXTRACTION ---
+            text = aws_service.extract_text_from_file_with_bedrock(s3_key)
+            texts_for_analysis.append(text)
+
+            # If it's an image, also perform image-specific forensics
             if is_image:
                 forensics = aws_service.analyze_image_forensics(s3_key)
                 reverse_search = aws_service.reverse_image_search(s3_key)
                 metadata = aws_service.extract_image_metadata(s3_key)
-                # --- USE BEDROCK FOR TEXT EXTRACTION ---
-                image_text = aws_service.extract_text_from_file_with_bedrock(s3_key)
-                await documents_collection.update_one({"_id": doc_id}, {"$set": {
-                    "extracted_text": image_text, "image_analysis_results": forensics,
-                    "reverse_image_search_results": reverse_search, "image_metadata": metadata,
-                    "analysis_status": "completed"
-                }})
-            elif is_document:
-                # --- USE BEDROCK FOR TEXT EXTRACTION ---
-                text = aws_service.extract_text_from_file_with_bedrock(s3_key)
-                await documents_collection.update_one({"_id": doc_id}, {"$set": {"extracted_text": text, "analysis_status": "completed"}})
-            else:
-                # Handle other file types like video by skipping them in this flow
-                await documents_collection.update_one({"_id": doc_id}, {"$set": {"analysis_status": "skipped_unsupported"}})
+                images_for_analysis.append({
+                    "filename": original_filename,
+                    "results": forensics,
+                    "reverse_search": reverse_search,
+                    "metadata": metadata
+                })
+
         except Exception as e:
             print(f"ERROR during file processing for {s3_key}: {e}")
-            await documents_collection.update_one({"_id": doc_id}, {"$set": {"analysis_status": "failed", "extracted_text": f"Analysis failed: {e}"}})
-            # Continue processing other files for robustness
+            # Even if one file fails, we continue, but we add its error to the text analysis
+            texts_for_analysis.append(f"Analysis failed for file {original_filename}: {e}")
 
-    # --- GATHER RESULTS AND SYNTHESIZE ---
-    all_docs_cursor = documents_collection.find({"claim_id": claim_id})
-    all_docs_list = await all_docs_cursor.to_list(length=100)
-    
-    texts_for_analysis = [doc['extracted_text'] for doc in all_docs_list if doc.get('extracted_text')]
-    images_for_analysis = []
-    video_analyses = [] # Video analysis is not implemented in this Render-focused version
-    for doc in all_docs_list:
-        if doc.get('image_analysis_results'):
-            images_for_analysis.append({
-                "filename": doc['original_filename'], "results": doc['image_analysis_results'],
-                "reverse_search": doc.get('reverse_image_search_results', {}), "metadata": doc.get('image_metadata', {})
-            })
-    
+    # --- GATHER FINAL RESULTS AND SYNTHESIZE ---
     adjuster_notes = claim.get('additional_info')
     
     final_report = await analyze_claim_bundle(texts_for_analysis, images_for_analysis, video_analyses, adjuster_notes)
