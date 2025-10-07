@@ -120,35 +120,24 @@ class AWSService:
 
     def start_q_conversation_with_context(self, claim_id: str) -> Dict[str, Any]:
         """
-        Starts a new Amazon Q conversation, pre-loading it with context.
-        This now correctly returns the systemMessageId needed for the next turn.
+        Starts a new Amazon Q conversation, pre-loading it with context by including it in the initial message.
         """
         try:
             context_s3_key = f"claims_context/{claim_id}.txt"
-            # This logic to create the context file seems to be missing, 
-            # assuming it's created during the analysis trigger.
-            # A real implementation would ensure this file exists.
             
-            # For now, let's create a dummy context if it doesn't exist to avoid errors.
-            try:
-                self.s3_client.head_object(Bucket=settings.Q_DATASOURCE_BUCKET_NAME, Key=context_s3_key)
-            except ClientError:
-                 self.s3_client.put_object(Bucket=settings.Q_DATASOURCE_BUCKET_NAME, Key=context_s3_key, Body=f"Initial context for claim {claim_id}.".encode('utf-8'))
-
-
-            system_prompt = "You are an AI insurance investigator. Use the information in the case file to answer."
+            # 1. Fetch the context content from the S3 file.
+            s3_object = self.s3_client.get_object(Bucket=settings.Q_DATASOURCE_BUCKET_NAME, Key=context_s3_key)
+            context_content = s3_object['Body'].read().decode('utf-8')
             
+            system_prompt = "You are an AI insurance investigator. Use only the information in the following case file to answer."
+            
+            # 2. Combine the prompt and the context into a single initial message.
+            initial_message = f"{system_prompt}\n\n--- CASE FILE START ---\n{context_content}\n--- CASE FILE END ---"
+
+            # 3. Call chat_sync with the combined message and NO `attachments` parameter.
             response = self.q_client.chat_sync(
                 applicationId=settings.AMAZON_Q_APP_ID,
-                userMessage=system_prompt,
-                attachments=[
-                    {
-                        's3': {
-                            'bucket': settings.Q_DATASOURCE_BUCKET_NAME,
-                            'key': context_s3_key
-                        }
-                    }
-                ]
+                userMessage=initial_message
             )
             return {
                 "conversationId": response.get("conversationId"),
@@ -159,6 +148,7 @@ class AWSService:
             raise HTTPException(status_code=404, detail="Context file not found for this claim. Please run the analysis first.")
         except ClientError as e:
             print(f"ERROR during Q conversation start: {e}")
+            # Re-raise the exception to be caught by the endpoint handler
             raise
 
     def query_q_conversation(self, conversation_id: str, parent_message_id: str, query: str) -> Dict[str, Any]:
@@ -182,3 +172,4 @@ class AWSService:
             raise
 
 aws_service = AWSService()
+
