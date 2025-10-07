@@ -22,10 +22,10 @@ async def get_all_claims(
     current_user: User = Depends(get_current_active_user)
 ):
     """
-    Retrieves all claims associated with the currently authenticated adjuster.
+    Retrieves all claims associated with the currently authenticated adjuster for the dashboard.
     """
     claims_cursor = claims_collection.find({"adjuster_id": current_user.id})
-    claims = await claims_cursor.to_list(length=1000) # Adjust length as needed
+    claims = await claims_cursor.to_list(length=1000)
     return claims
 
 
@@ -67,7 +67,6 @@ async def create_claim(
 async def trigger_claim_analysis(
     claim_id: str,
     claims_collection: AsyncIOMotorCollection = Depends(lambda: get_db_collection("claims")),
-    documents_collection: AsyncIOMotorCollection = Depends(lambda: get_db_collection("documents")),
     current_user: User = Depends(get_current_active_user)
 ):
     """
@@ -89,7 +88,7 @@ async def trigger_claim_analysis(
         is_video = file_extension in ['mp4', 'mov', 'avi']
         
         if is_video:
-            print(f"INFO: Video file {s3_key} detected and will be skipped in this workflow.")
+            print(f"INFO: Video file {s3_key} detected and will be skipped.")
             texts_for_analysis.append(f"Analysis for video file '{s3_key.split('/')[-1]}' was skipped.")
             continue
 
@@ -134,8 +133,7 @@ async def trigger_claim_analysis(
         aws_service.s3_client.put_object(
             Bucket=settings.Q_DATASOURCE_BUCKET_NAME,
             Key=context_s3_key,
-            Body=context_content.encode('utf-8'),
-            Tagging=f"claim_id={claim_id}"
+            Body=context_content.encode('utf-8')
         )
         print(f"Successfully uploaded context file to S3 bucket {settings.Q_DATASOURCE_BUCKET_NAME}")
 
