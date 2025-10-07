@@ -1,60 +1,67 @@
 # app/api/v1/endpoints/investigate.py
 
-from fastapi import APIRouter, Depends, HTTPException, status, Body
-from motor.motor_asyncio import AsyncIOMotorCollection
+import asyncio
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-
 from app.models.user import User
 from app.core.security import get_current_active_user
 from app.services.aws_service import aws_service
-from app.db.session import get_db_collection
+from typing import Dict, Any
 
 router = APIRouter()
 
+# --- NEW MODELS FOR THE INTELLIGENT CONVERSATION FLOW ---
+
+class StartConversationResponse(BaseModel):
+    conversationId: str
+    systemMessage: str
+
 class QueryRequest(BaseModel):
-    query: str = Body(..., embed=True, description="The question for the AI co-pilot.")
+    query: str
+    conversationId: str
 
 class QueryResponse(BaseModel):
     answer: str
 
-@router.post("/{claim_id}/query", response_model=QueryResponse)
-async def query_claim_ai_copilot(
+# ---------------------------------------------------------
+
+@router.post("/{claim_id}/start-conversation", response_model=StartConversationResponse)
+async def start_conversation(
     claim_id: str,
-    query_request: QueryRequest,
-    claims_collection: AsyncIOMotorCollection = Depends(lambda: get_db_collection("claims")),
     current_user: User = Depends(get_current_active_user)
 ):
-
-    # 1. Verify that the claim exists and the current user has access to it.
-    claim = await claims_collection.find_one(
-        {"id": claim_id, "adjuster_id": current_user.id}
-    )
-    if not claim:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Claim not found or you do not have permission to access it."
-        )
-
-    # 2. Check if the claim is ready for investigation.
-    if claim.get("status") != "ready_for_review":
-         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Claim is still being processed. Current status: {claim.get('status')}"
-        )
-
-    # 3. Send the query to the AWS service.
+    """
+    Starts a new, context-aware conversation with the AI Co-pilot for a specific claim.
+    This should be called by the frontend when the user first opens the chat window.
+    """
     try:
-        # The aws_service handles the direct communication with Amazon Q.
-        ai_response = aws_service.query_amazon_q(
-            claim_id=claim_id,
-            user_id=current_user.id,
-            query=query_request.query
+        # This new function reads the context file from S3 and starts the conversation
+        response: Dict[str, Any] = await asyncio.to_thread(aws_service.start_q_conversation_with_context, claim_id=claim_id)
+        return response
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        print(f"ERROR: Failed to start conversation for claim {claim_id}: {e}")
+        raise HTTPException(status_code=503, detail="The AI co-pilot is currently unavailable.")
+
+
+@router.post("/{claim_id}/query", response_model=QueryResponse)
+async def query_conversation(
+    claim_id: str, # Retained for URL consistency
+    request: QueryRequest,
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Sends a follow-up question to an existing, context-aware conversation.
+    The frontend MUST send the conversationId received from the 'start-conversation' endpoint.
+    """
+    try:
+        ai_response = await asyncio.to_thread(
+            aws_service.query_q_conversation,
+            conversation_id=request.conversationId,
+            query=request.query
         )
         return {"answer": ai_response}
     except Exception as e:
-        # Catch potential exceptions from the Boto3 client.
-        print(f"Error querying Amazon Q for claim {claim_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The AI co-pilot is currently unavailable. Please try again later."
-        )
+        print(f"ERROR: Failed during conversation query for claim {claim_id}: {e}")
+        raise HTTPException(status_code=503, detail="The AI co-pilot is currently unavailable.")

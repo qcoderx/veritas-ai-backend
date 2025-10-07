@@ -3,7 +3,6 @@
 import boto3
 import json
 import base64
-import time
 from botocore.client import Config
 from botocore.exceptions import ClientError
 from app.core.config import settings
@@ -12,20 +11,16 @@ from googleapiclient.errors import HttpError
 from typing import Optional, Dict, Any
 import io
 import exifread
+from fastapi import HTTPException
 
 class AWSService:
     def __init__(self):
         """Initializes all required AWS and Google service clients."""
-        # --- Create a session with the region explicitly defined ---
-        # This forces all clients created from this session to use the correct region.
         session = boto3.Session(region_name=settings.AWS_REGION)
-        
-        # --- Create all clients from the session to ensure regional consistency ---
         self.s3_client = session.client("s3", config=Config(signature_version='s3v4'))
         self.bedrock_runtime = session.client("bedrock-runtime")
         self.q_client = session.client("qbusiness")
         self.rekognition_client = session.client("rekognition")
-        # The Textract client is no longer needed.
 
         if settings.GOOGLE_API_KEY and settings.GOOGLE_CUSTOM_SEARCH_ENGINE_ID:
             try:
@@ -34,24 +29,17 @@ class AWSService:
                 print(f"WARNING: Could not initialize Google Search service: {e}")
                 self.google_search_service = None
         else:
-            print("INFO: Google API Key or Search Engine ID not configured. Reverse image search will be skipped.")
+            print("INFO: Google API Key or Search Engine ID not configured.")
             self.google_search_service = None
 
     def generate_presigned_post_url(self, object_name: str) -> Optional[Dict[str, Any]]:
-        """Generate a presigned URL for a secure S3 POST."""
         try:
-            response = self.s3_client.generate_presigned_post(
-                Bucket=settings.S3_UPLOADS_BUCKET_NAME,
-                Key=object_name,
-                ExpiresIn=3600
-            )
-            return response
+            return self.s3_client.generate_presigned_post(Bucket=settings.S3_UPLOADS_BUCKET_NAME, Key=object_name, ExpiresIn=3600)
         except ClientError as e:
             print(f"FATAL: Error generating presigned URL: {e}")
             return None
 
     def analyze_image_forensics(self, s3_key: str) -> Dict[str, Any]:
-        """Performs a multi-layered forensic analysis on an image using Rekognition."""
         results = {"forensic_alerts": [], "detected_objects": [], "detected_text": []}
         s3_object = {'Bucket': settings.S3_UPLOADS_BUCKET_NAME, 'Name': s3_key}
         try:
@@ -64,7 +52,6 @@ class AWSService:
         return results
 
     def reverse_image_search(self, s3_key: str) -> Dict[str, Any]:
-        """Performs a reverse image search to find instances of the image online."""
         results = {"match_found": False, "urls": [], "search_status": "not_configured"}
         if not self.google_search_service:
             results["search_status"] = "API keys not configured."
@@ -82,22 +69,16 @@ class AWSService:
         return results
 
     def extract_text_from_file_with_bedrock(self, s3_key: str) -> str:
-        """
-        Extracts text from a file (PNG, JPG, PDF) using Bedrock's Claude 3 Sonnet.
-        """
         try:
             s3_object = self.s3_client.get_object(Bucket=settings.S3_UPLOADS_BUCKET_NAME, Key=s3_key)
             file_bytes = s3_object['Body'].read()
             base64_encoded_data = base64.b64encode(file_bytes).decode('utf-8')
-
             media_type = "image/jpeg"
             if s3_key.lower().endswith('.png'): media_type = "image/png"
             elif s3_key.lower().endswith('.pdf'): media_type = "application/pdf"
-
             prompt = "Extract all text verbatim from the document. Do not summarize or add commentary."
             body = json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 4096,
+                "anthropic_version": "bedrock-2023-05-31", "max_tokens": 4096,
                 "messages": [{"role": "user", "content": [
                     {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64_encoded_data}},
                     {"type": "text", "text": prompt}
@@ -111,11 +92,9 @@ class AWSService:
             return f"Error extracting text from file: {s3_key}. Reason: {e}"
 
     def invoke_bedrock_model(self, prompt: str) -> Dict[str, Any]:
-        """Invokes the Amazon Bedrock model using the new Messages API for Claude 3."""
         try:
             body = json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 4096,
+                "anthropic_version": "bedrock-2023-05-31", "max_tokens": 4096,
                 "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
             })
             response = self.bedrock_runtime.invoke_model(body=body, modelId=settings.BEDROCK_MODEL_ID, accept="application/json", contentType="application/json")
@@ -125,21 +104,7 @@ class AWSService:
             print(f"FATAL: Error invoking Bedrock model: {e}")
             raise
 
-    def query_amazon_q(self, claim_id: str, user_id: str, query: str) -> str:
-        """Sends a query to Amazon Q for conversational investigation."""
-        try:
-            # For "Anonymous" access applications, the userId parameter must not be sent.
-            response = self.q_client.chat_sync(
-                applicationId=settings.AMAZON_Q_APP_ID,
-                userMessage=query
-            )
-            return response.get("systemMessage", "I could not find an answer.")
-        except ClientError as e:
-            print(f"ERROR: Error querying Amazon Q for claim {claim_id}: {e}")
-            raise
-
     def extract_image_metadata(self, s3_key: str) -> dict:
-        """Extracts detailed EXIF metadata from an image stored in S3."""
         metadata = {"date_time_original": None, "camera_model": None, "gps_info": None, "warnings": []}
         try:
             s3_object = self.s3_client.get_object(Bucket=settings.S3_UPLOADS_BUCKET_NAME, Key=s3_key)
@@ -152,22 +117,48 @@ class AWSService:
         except Exception as e:
             metadata["warnings"].append("Error extracting metadata.")
         return metadata
-        
-    def start_q_data_source_sync(self) -> str:
+
+    # --- THE CORRECTED, INTELLIGENT Q FUNCTIONS ---
+    def start_q_conversation_with_context(self, claim_id: str) -> Dict[str, Any]:
         """
-        Starts a synchronization job for the Amazon Q data source.
+        Starts a new Amazon Q conversation, pre-loading it with the context from the claim's analysis file.
         """
         try:
-            response = self.q_client.start_data_source_sync_job(
-                dataSourceId=settings.Q_DATASOURCE_ID,
+            context_s3_key = f"claims_context/{claim_id}.txt"
+            s3_object = self.s3_client.get_object(Bucket=settings.Q_DATASOURCE_BUCKET_NAME, Key=context_s3_key)
+            context_content = s3_object['Body'].read().decode('utf-8')
+
+            system_prompt = "You are an AI insurance investigator. The user will ask you questions about the following case file. Use only the information provided in this file to answer."
+            initial_message = f"{system_prompt}\n\n--- CASE FILE START ---\n{context_content}\n--- CASE FILE END ---"
+
+            response = self.q_client.chat_sync(
                 applicationId=settings.AMAZON_Q_APP_ID,
-                indexId=settings.Q_INDEX_ID
+                userMessage=initial_message
             )
-            job_id = response.get('executionId')
-            print(f"Started Amazon Q data source sync job: {job_id}")
-            return job_id
+            return {
+                "conversationId": response.get("conversationId"),
+                "systemMessage": "Context loaded. You can now ask questions about this claim."
+            }
+        except self.s3_client.exceptions.NoSuchKey:
+            print(f"ERROR: Context file not found for claim {claim_id}. Analysis may not have been run.")
+            raise HTTPException(status_code=404, detail="Context file not found for this claim. Please run the analysis first.")
         except ClientError as e:
-            print(f"ERROR: Could not start Amazon Q data source sync. Reason: {e}")
+            print(f"ERROR: Could not start Q conversation for claim {claim_id}: {e}")
+            raise
+
+    def query_q_conversation(self, conversation_id: str, query: str) -> str:
+        """
+        Sends a user's follow-up question to an existing Amazon Q conversation.
+        """
+        try:
+            response = self.q_client.chat_sync(
+                applicationId=settings.AMAZON_Q_APP_ID,
+                userMessage=query,
+                conversationId=conversation_id
+            )
+            return response.get("systemMessage", "I could not find an answer.")
+        except ClientError as e:
+            print(f"ERROR: Error during Q conversation: {e}")
             raise
 
 aws_service = AWSService()

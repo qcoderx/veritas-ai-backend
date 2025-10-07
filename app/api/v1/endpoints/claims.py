@@ -134,7 +134,8 @@ async def trigger_claim_analysis(
         aws_service.s3_client.put_object(
             Bucket=settings.Q_DATASOURCE_BUCKET_NAME,
             Key=context_s3_key,
-            Body=context_content.encode('utf-8')
+            Body=context_content.encode('utf-8'),
+            Tagging=f"claim_id={claim_id}"
         )
         print(f"Successfully uploaded context file to S3 bucket {settings.Q_DATASOURCE_BUCKET_NAME}")
 
