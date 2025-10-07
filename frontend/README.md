@@ -76,6 +76,12 @@ Veritas_AI/
 - **Amazon Q** - AI investigation assistant
 - **JWT** - Authentication tokens
 
+### AWS Tools Deployed
+- **AWS Bedrock** For the smart comprehension of analyzed data and risk score generation
+- **AWS S3** For storing claim files ansd contents
+- **AWS Q** For AI copilot for further investigation of claims
+- **AWS Rekognition** For deep analysis of image content for odd things.
+
 ## 🚀 Getting Started
 
 ### Prerequisites
