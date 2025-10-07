@@ -7,7 +7,7 @@ Veritas AI is an AI-powered insurance claims fraud detection platform that accel
 ## 📁 Repository Structure
 
 ```
-Veritas-AI-FullStack/
+Veritas_AI/
 ├── frontend/                   # React TypeScript Frontend
 │   ├── public/                # Static assets
 │   ├── src/                   # Source code
@@ -17,12 +17,10 @@ Veritas-AI-FullStack/
 │   │   └── redux/            # State management
 │   ├── package.json          # Frontend dependencies
 │   └── vite.config.ts        # Build configuration
-├── app/                       # FastAPI Python Backend
-│   ├── main.py               # Entry point
-│   ├── models/               # Database models
-│   ├── routers/              # API routes
-│   └── services/             # Business logic
-├── requirements.txt           # Python dependencies
+├── backend/                   # FastAPI Python Backend
+│   ├── app/                   # Application code
+│   ├── requirements.txt       # Python dependencies
+│   └── main.py               # Entry point
 └── README.md                 # This file
 ```
 
@@ -113,9 +111,9 @@ Frontend available at `http://localhost:5173`
 
 ### Backend Setup
 
-1. **Navigate to root directory**
+1. **Navigate to backend directory**
 ```bash
-cd .
+cd backend
 ```
 
 2. **Create virtual environment**
@@ -142,7 +140,7 @@ JWT_SECRET_KEY=your_jwt_secret
 
 5. **Start backend server**
 ```bash
-uvicorn app.main:app --reload
+uvicorn main:app --reload
 ```
 
 Backend available at `http://localhost:8000`
@@ -189,6 +187,7 @@ npm run build
 
 ### Backend (Render/AWS)
 ```bash
+cd backend
 # Deploy using Docker or direct Python deployment
 ```
 
@@ -218,6 +217,7 @@ npm run preview  # Test production build
 
 ### Backend Testing
 ```bash
+cd backend
 python -m pytest  # Run test suite
 ```
 
