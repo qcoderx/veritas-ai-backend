@@ -16,6 +16,19 @@ import asyncio
 
 router = APIRouter()
 
+@router.get("/", response_model=List[Claim])
+async def get_all_claims(
+    claims_collection: AsyncIOMotorCollection = Depends(lambda: get_db_collection("claims")),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Retrieves all claims associated with the currently authenticated adjuster.
+    """
+    claims_cursor = claims_collection.find({"adjuster_id": current_user.id})
+    claims = await claims_cursor.to_list(length=1000) # Adjust length as needed
+    return claims
+
+
 @router.post("/", response_model=ClaimCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_claim(
     claim_in: ClaimCreate,
@@ -31,7 +44,7 @@ async def create_claim(
 
     for i in range(claim_in.file_count):
         object_name = f"claims/{new_claim_id}/file_{uuid.uuid4().hex}"
-        s3_keys.append(object_name) # Store the key to be processed later
+        s3_keys.append(object_name)
         presigned_data = aws_service.generate_presigned_post_url(object_name)
         if not presigned_data:
             raise HTTPException(
@@ -43,7 +56,7 @@ async def create_claim(
         "id": new_claim_id, "adjuster_id": current_user.id, "status": "upload_in_progress",
         "file_count": claim_in.file_count, "additional_info": claim_in.additional_info,
         "created_at": datetime.utcnow(), "updated_at": datetime.utcnow(),
-        "s3_keys": s3_keys # Save the list of keys to the claim object
+        "s3_keys": s3_keys
     }
     await claims_collection.insert_one(claim_data)
     
@@ -81,7 +94,6 @@ async def trigger_claim_analysis(
             continue
 
         try:
-            # --- USE BEDROCK FOR ALL TEXT EXTRACTION ---
             text = aws_service.extract_text_from_file_with_bedrock(s3_key)
             texts_for_analysis.append(text)
 
@@ -99,7 +111,6 @@ async def trigger_claim_analysis(
             print(f"ERROR during file processing for {s3_key}: {e}")
             texts_for_analysis.append(f"Analysis failed for file {s3_key.split('/')[-1]}: {e}")
 
-    # --- GATHER FINAL RESULTS AND SYNTHESIZE ---
     adjuster_notes = claim.get('additional_info')
     
     final_report = await analyze_claim_bundle(texts_for_analysis, images_for_analysis, [], adjuster_notes)
@@ -111,7 +122,7 @@ async def trigger_claim_analysis(
     }
     await claims_collection.update_one({"id": claim_id}, {"$set": update_data})
     
-    # --- NEW WORKFLOW: Create and Upload Context File for Amazon Q ---
+    # --- Create and Upload Context File for Amazon Q ---
     print(f"Creating context file for claim {claim_id} for Amazon Q...")
     context_content = f"Claim ID: {claim_id}\nFraud Risk Score: {final_report.get('fraud_risk_score')}%\nSummary: {final_report.get('summary')}\n\nKey Risk Factors:\n"
     for factor in final_report.get('key_risk_factors', []):
@@ -127,8 +138,6 @@ async def trigger_claim_analysis(
         )
         print(f"Successfully uploaded context file to S3 bucket {settings.Q_DATASOURCE_BUCKET_NAME}")
 
-        # --- Trigger the Q Data Source Sync ---
-        # Running in a thread to avoid blocking the main async event loop
         await asyncio.to_thread(aws_service.start_q_data_source_sync)
 
     except Exception as e:
