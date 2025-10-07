@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     REKOGNITION_SNS_TOPIC_ARN: str
     REKOGNITION_ROLE_ARN: str
 
+    # --- NEW: Amazon Q Data Source ---
+    Q_DATASOURCE_BUCKET_NAME: str
+    Q_INDEX_ID: str
+    Q_DATASOURCE_ID: str
+
     class Config:
         case_sensitive = True
 

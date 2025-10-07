@@ -90,6 +90,24 @@ class AWSService:
         except Exception as e:
             print(f"FATAL: Bedrock text extraction failed for {s3_key}. Reason: {e}")
             return f"Error extracting text from file: {s3_key}. Reason: {e}"
+    
+    def start_q_data_source_sync(self) -> str:
+        """
+        Starts a synchronization job for the Amazon Q data source.
+        This tells Q to re-index all the context files in its S3 bucket.
+        """
+        try:
+            response = self.q_client.start_data_source_sync_job(
+                dataSourceId=settings.Q_DATASOURCE_ID,
+                applicationId=settings.AMAZON_Q_APP_ID,
+                indexId=settings.Q_INDEX_ID
+            )
+            job_id = response.get('executionId')
+            print(f"Started Amazon Q data source sync job: {job_id}")
+            return job_id
+        except ClientError as e:
+            print(f"ERROR: Could not start Amazon Q data source sync. Reason: {e}")
+            raise
 
     def invoke_bedrock_model(self, prompt: str) -> Dict[str, Any]:
         try:
