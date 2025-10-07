@@ -12,8 +12,14 @@ import uuid
 from datetime import datetime
 from typing import List
 from app.core.config import settings
+import asyncio
 
 router = APIRouter()
+
+@router.get("/", response_model=List[Claim])
+async def get_all_claims(claims_collection: AsyncIOMotorCollection = Depends(lambda: get_db_collection("claims")), current_user: User = Depends(get_current_active_user)):
+    claims_cursor = claims_collection.find({"adjuster_id": current_user.id})
+    return await claims_cursor.to_list(length=1000)
 
 @router.post("/", response_model=ClaimCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_claim(claim_in: ClaimCreate, claims_collection: AsyncIOMotorCollection = Depends(lambda: get_db_collection("claims")), current_user: User = Depends(get_current_active_user)):
@@ -31,7 +37,7 @@ async def create_claim(claim_in: ClaimCreate, claims_collection: AsyncIOMotorCol
     return {"claim_id": new_claim_id, "upload_urls": upload_urls}
 
 @router.post("/{claim_id}/trigger-analysis", response_model=Claim, status_code=status.HTTP_202_ACCEPTED)
-async def trigger_claim_analysis(claim_id: str, claims_collection: AsyncIOMotorCollection = Depends(lambda: get_db_collection("claims")), documents_collection: AsyncIOMotorCollection = Depends(lambda: get_db_collection("documents")), current_user: User = Depends(get_current_active_user)):
+async def trigger_claim_analysis(claim_id: str, claims_collection: AsyncIOMotorCollection = Depends(lambda: get_db_collection("claims")), current_user: User = Depends(get_current_active_user)):
     claim = await claims_collection.find_one({"id": claim_id, "adjuster_id": current_user.id})
     if not claim:
         raise HTTPException(status_code=404, detail="Claim not found")
@@ -45,14 +51,18 @@ async def trigger_claim_analysis(claim_id: str, claims_collection: AsyncIOMotorC
         original_filename = s3_key.split('/')[-1]
         file_extension = s3_key.split('.')[-1].lower()
         is_image = file_extension in ['jpg', 'jpeg', 'png']
-        text = aws_service.extract_text_from_file_with_bedrock(s3_key)
-        texts_for_analysis.append(text)
-        if is_image:
-            forensics = aws_service.analyze_image_forensics(s3_key)
-            reverse_search = aws_service.reverse_image_search(s3_key)
-            metadata = aws_service.extract_image_metadata(s3_key)
-            images_for_analysis.append({"filename": original_filename, "results": forensics, "reverse_search": reverse_search, "metadata": metadata})
-    
+        
+        try:
+            text = aws_service.extract_text_from_file_with_bedrock(s3_key)
+            texts_for_analysis.append(text)
+            if is_image:
+                forensics = aws_service.analyze_image_forensics(s3_key)
+                reverse_search = aws_service.reverse_image_search(s3_key)
+                metadata = aws_service.extract_image_metadata(s3_key)
+                images_for_analysis.append({"filename": original_filename, "results": forensics, "reverse_search": reverse_search, "metadata": metadata})
+        except Exception as e:
+            texts_for_analysis.append(f"Analysis failed for file {original_filename}: {e}")
+
     adjuster_notes = claim.get('additional_info')
     final_report = await analyze_claim_bundle(texts_for_analysis, images_for_analysis, [], adjuster_notes)
 
