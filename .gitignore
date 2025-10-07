@@ -1,6 +1,6 @@
 # .gitignore
 
-# --- Byte-compiled / optimized / C extensions ---
+# --- Byte-compiled / optimized / C extensio
 __pycache__/
 *.pyc
 *.pyo
