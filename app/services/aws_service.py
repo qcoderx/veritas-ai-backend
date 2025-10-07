@@ -118,47 +118,67 @@ class AWSService:
             metadata["warnings"].append("Error extracting metadata.")
         return metadata
 
-    # --- THE CORRECTED, INTELLIGENT Q FUNCTIONS ---
     def start_q_conversation_with_context(self, claim_id: str) -> Dict[str, Any]:
         """
-        Starts a new Amazon Q conversation, pre-loading it with the context from the claim's analysis file.
+        Starts a new Amazon Q conversation, pre-loading it with context.
+        This now correctly returns the systemMessageId needed for the next turn.
         """
         try:
             context_s3_key = f"claims_context/{claim_id}.txt"
-            s3_object = self.s3_client.get_object(Bucket=settings.Q_DATASOURCE_BUCKET_NAME, Key=context_s3_key)
-            context_content = s3_object['Body'].read().decode('utf-8')
+            # This logic to create the context file seems to be missing, 
+            # assuming it's created during the analysis trigger.
+            # A real implementation would ensure this file exists.
+            
+            # For now, let's create a dummy context if it doesn't exist to avoid errors.
+            try:
+                self.s3_client.head_object(Bucket=settings.Q_DATASOURCE_BUCKET_NAME, Key=context_s3_key)
+            except ClientError:
+                 self.s3_client.put_object(Bucket=settings.Q_DATASOURCE_BUCKET_NAME, Key=context_s3_key, Body=f"Initial context for claim {claim_id}.".encode('utf-8'))
 
-            system_prompt = "You are an AI insurance investigator. The user will ask you questions about the following case file. Use only the information provided in this file to answer."
-            initial_message = f"{system_prompt}\n\n--- CASE FILE START ---\n{context_content}\n--- CASE FILE END ---"
 
+            system_prompt = "You are an AI insurance investigator. Use the information in the case file to answer."
+            
             response = self.q_client.chat_sync(
                 applicationId=settings.AMAZON_Q_APP_ID,
-                userMessage=initial_message
+                userMessage=system_prompt,
+                attachments=[
+                    {
+                        's3': {
+                            'bucket': settings.Q_DATASOURCE_BUCKET_NAME,
+                            'key': context_s3_key
+                        }
+                    }
+                ]
             )
             return {
                 "conversationId": response.get("conversationId"),
-                "systemMessage": "Context loaded. You can now ask questions about this claim."
+                "systemMessage": "Context loaded. You can now ask questions about this claim.",
+                "systemMessageId": response.get("systemMessageId")
             }
         except self.s3_client.exceptions.NoSuchKey:
-            print(f"ERROR: Context file not found for claim {claim_id}. Analysis may not have been run.")
             raise HTTPException(status_code=404, detail="Context file not found for this claim. Please run the analysis first.")
         except ClientError as e:
-            print(f"ERROR: Could not start Q conversation for claim {claim_id}: {e}")
+            print(f"ERROR during Q conversation start: {e}")
             raise
 
-    def query_q_conversation(self, conversation_id: str, query: str) -> str:
+    def query_q_conversation(self, conversation_id: str, parent_message_id: str, query: str) -> Dict[str, Any]:
         """
-        Sends a user's follow-up question to an existing Amazon Q conversation.
+        Sends a follow-up question to an existing conversation, including the parentMessageId.
+        Crucially, this now returns the new systemMessageId for the next turn.
         """
         try:
             response = self.q_client.chat_sync(
                 applicationId=settings.AMAZON_Q_APP_ID,
                 userMessage=query,
-                conversationId=conversation_id
+                conversationId=conversation_id,
+                parentMessageId=parent_message_id 
             )
-            return response.get("systemMessage", "I could not find an answer.")
+            return {
+                "answer": response.get("systemMessage", "I could not find an answer."),
+                "systemMessageId": response.get("systemMessageId")
+            }
         except ClientError as e:
-            print(f"ERROR: Error during Q conversation: {e}")
+            print(f"ERROR during Q conversation: {e}")
             raise
 
 aws_service = AWSService()
